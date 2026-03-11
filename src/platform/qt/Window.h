@@ -27,6 +27,9 @@
 #include "scripting/ScriptingController.h"
 #endif
 
+class QAbstractButton;
+class QLabel;
+
 namespace QGBA {
 
 class AudioProcessor;
@@ -125,6 +128,7 @@ public slots:
 #endif
 
 protected:
+	virtual bool eventFilter(QObject* watched, QEvent* event) override;
 	virtual void keyPressEvent(QKeyEvent* event) override;
 	virtual void keyReleaseEvent(QKeyEvent* event) override;
 	virtual void resizeEvent(QResizeEvent*) override;
@@ -176,6 +180,10 @@ private:
 
 	void attachWidget(QWidget* widget);
 	void detachWidget();
+	void repositionMetricsOverlay();
+	void refreshOverlayFps();
+	void updateMetricsOverlay();
+	QString describeButton(const QAbstractButton* button) const;
 
 	void appendMRU(const QString& fname);
 	void clearMRU();
@@ -227,6 +235,12 @@ private:
 	QList<qint64> m_frameList;
 	QElapsedTimer m_frameTimer;
 	QTimer m_fpsTimer;
+	QLabel* m_metricsOverlay = nullptr;
+	QTimer m_metricsOverlayTimer;
+	QElapsedTimer m_metricsOverlayFrameTimer;
+	int m_metricsOverlayFrames = 0;
+	double m_metricsOverlayFps = 0.0;
+	QString m_lastClickedButton;
 	QTimer m_mustRestart;
 	QTimer m_mustReset;
 	QStringList m_mruFiles;
