@@ -5,8 +5,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "Window.h"
 
+#include <QAbstractButton>
+#include <QApplication>
+#include <QEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
@@ -17,6 +21,40 @@
 #ifdef Q_OS_WIN
 #include <dwmapi.h>
 #endif
+
+namespace {
+
+QString describeKeyEvent(const QKeyEvent* event) {
+	if (!event) {
+		return {};
+	}
+	int key = event->key();
+	if (key == Qt::Key_unknown) {
+		return {};
+	}
+	Qt::KeyboardModifiers modifiers = event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+	QString keyName;
+	switch (key) {
+	case Qt::Key_Shift:
+	case Qt::Key_Control:
+	case Qt::Key_Alt:
+	case Qt::Key_Meta:
+		keyName = QKeySequence(key).toString(QKeySequence::NativeText);
+		break;
+	default:
+		keyName = QKeySequence(modifiers | key).toString(QKeySequence::NativeText);
+		break;
+	}
+	if (keyName.isEmpty()) {
+		keyName = event->text().simplified();
+	}
+	if (keyName.isEmpty()) {
+		keyName = QKeySequence(key).toString(QKeySequence::NativeText);
+	}
+	return keyName;
+}
+
+}
 
 #ifdef USE_SQLITE3
 #include "ArchiveInspector.h"
@@ -198,14 +236,67 @@ Window::Window(CoreManager* manager, ConfigController* config, int playerId, QWi
 	connect(this, &QWidget::customContextMenuRequested, [this](const QPoint& pos) {
 		m_actions.exec(mapToGlobal(pos));
 	});
+
+	QFont metricsFont = GBAApp::app()->monospaceFont();
+	metricsFont.setPointSize(10);
+	m_metricsOverlay = new QLabel(this);
+	m_metricsOverlay->setObjectName("metricsOverlay");
+	m_metricsOverlay->setAttribute(Qt::WA_TransparentForMouseEvents);
+	m_metricsOverlay->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+	m_metricsOverlay->setMargin(8);
+	m_metricsOverlay->setFont(metricsFont);
+	m_metricsOverlay->setStyleSheet("QLabel#metricsOverlay {"
+		"background-color: rgba(18, 18, 18, 190);"
+		"border: 1px solid rgba(255, 255, 255, 48);"
+		"border-radius: 6px;"
+		"color: white;"
+	"}");
+	m_lastClickedButton = tr("None");
+	connect(&m_metricsOverlayTimer, &QTimer::timeout, this, [this]() {
+		refreshOverlayFps();
+	});
+	m_metricsOverlayTimer.setInterval(16);
+	m_metricsOverlayFrameTimer.start();
+	m_metricsOverlayTimer.start();
+	updateMetricsOverlay();
+	qApp->installEventFilter(this);
 }
 
 Window::~Window() {
+	if (qApp) {
+		qApp->removeEventFilter(this);
+	}
 	delete m_logView;
 
 #ifdef USE_SQLITE3
 	delete m_libraryView;
 #endif
+}
+
+bool Window::eventFilter(QObject* watched, QEvent* event) {
+	if (!event) {
+		return QMainWindow::eventFilter(watched, event);
+	}
+	if (event->type() == QEvent::KeyPress) {
+		QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
+		if (!keyEvent->isAutoRepeat()) {
+			QString keyName = describeKeyEvent(keyEvent);
+			if (!keyName.isEmpty()) {
+				m_lastClickedButton = keyName;
+				updateMetricsOverlay();
+			}
+		}
+	}
+	if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::KeyRelease) {
+		if (QAbstractButton* button = qobject_cast<QAbstractButton*>(watched)) {
+			QString buttonName = describeButton(button);
+			if (!buttonName.isEmpty()) {
+				m_lastClickedButton = buttonName;
+				updateMetricsOverlay();
+			}
+		}
+	}
+	return QMainWindow::eventFilter(watched, event);
 }
 
 void Window::argumentsPassed() {
@@ -521,6 +612,7 @@ void Window::showMenu(bool show) {
 		hideMenu->setActive(!show);
 	}
 	menuBar()->setVisible(show);
+	repositionMetricsOverlay();
 }
 
 void Window::loadCamImage() {
@@ -720,6 +812,7 @@ void Window::resizeEvent(QResizeEvent*) {
 	}
 
 	m_config->setOption("fullscreen", isFullScreen());
+	repositionMetricsOverlay();
 }
 
 void Window::showEvent(QShowEvent* event) {
@@ -766,6 +859,7 @@ void Window::showEvent(QShowEvent* event) {
 	}
 	reloadDisplayDriver();
 	setFocus();
+	repositionMetricsOverlay();
 }
 
 void Window::hideEvent(QHideEvent* event) {
@@ -2047,10 +2141,71 @@ void Window::attachWidget(QWidget* widget) {
 	if (m_display && widget == m_display.get()) {
 		m_display->show();
 	}
+	repositionMetricsOverlay();
+	if (m_metricsOverlay) {
+		m_metricsOverlay->raise();
+	}
 }
 
 void Window::detachWidget() {
 	m_config->updateOption("showLibrary");
+}
+
+void Window::repositionMetricsOverlay() {
+	if (!m_metricsOverlay) {
+		return;
+	}
+	m_metricsOverlay->adjustSize();
+	const int margin = 12;
+	int y = margin;
+	if (menuBar() && menuBar()->isVisible()) {
+		y = menuBar()->geometry().bottom() + margin;
+	}
+	int x = width() - m_metricsOverlay->width() - margin;
+	m_metricsOverlay->move(qMax(margin, x), y);
+	m_metricsOverlay->raise();
+}
+
+void Window::refreshOverlayFps() {
+	if (!m_metricsOverlayFrameTimer.isValid()) {
+		m_metricsOverlayFrameTimer.start();
+		return;
+	}
+	++m_metricsOverlayFrames;
+	qint64 elapsed = m_metricsOverlayFrameTimer.elapsed();
+	if (elapsed >= 1000) {
+		m_metricsOverlayFps = (m_metricsOverlayFrames * 1000.0) / elapsed;
+		m_metricsOverlayFrames = 0;
+		m_metricsOverlayFrameTimer.restart();
+		updateMetricsOverlay();
+	}
+}
+
+void Window::updateMetricsOverlay() {
+	if (!m_metricsOverlay) {
+		return;
+	}
+	QString fpsText = m_metricsOverlayFps > 0.0 ? QString::number(m_metricsOverlayFps, 'f', 1) : QStringLiteral("--");
+	m_metricsOverlay->setText(tr("UI FPS: %1\nLast button: %2").arg(fpsText, m_lastClickedButton));
+	repositionMetricsOverlay();
+}
+
+QString Window::describeButton(const QAbstractButton* button) const {
+	if (!button) {
+		return {};
+	}
+	QString buttonName = button->text();
+	buttonName.remove(QLatin1Char('&'));
+	buttonName.replace(QLatin1Char('\n'), QLatin1Char(' '));
+	buttonName = buttonName.simplified();
+	if (!buttonName.isEmpty()) {
+		return buttonName;
+	}
+	buttonName = button->accessibleName().simplified();
+	if (!buttonName.isEmpty()) {
+		return buttonName;
+	}
+	return button->objectName().simplified();
 }
 
 void Window::appendMRU(const QString& fname) {
