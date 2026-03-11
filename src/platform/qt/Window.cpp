@@ -22,6 +22,40 @@
 #include <dwmapi.h>
 #endif
 
+namespace {
+
+QString describeKeyEvent(const QKeyEvent* event) {
+	if (!event) {
+		return {};
+	}
+	int key = event->key();
+	if (key == Qt::Key_unknown) {
+		return {};
+	}
+	Qt::KeyboardModifiers modifiers = event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+	QString keyName;
+	switch (key) {
+	case Qt::Key_Shift:
+	case Qt::Key_Control:
+	case Qt::Key_Alt:
+	case Qt::Key_Meta:
+		keyName = QKeySequence(key).toString(QKeySequence::NativeText);
+		break;
+	default:
+		keyName = QKeySequence(modifiers | key).toString(QKeySequence::NativeText);
+		break;
+	}
+	if (keyName.isEmpty()) {
+		keyName = event->text().simplified();
+	}
+	if (keyName.isEmpty()) {
+		keyName = QKeySequence(key).toString(QKeySequence::NativeText);
+	}
+	return keyName;
+}
+
+}
+
 #ifdef USE_SQLITE3
 #include "ArchiveInspector.h"
 #include "library/LibraryController.h"
@@ -240,7 +274,20 @@ Window::~Window() {
 }
 
 bool Window::eventFilter(QObject* watched, QEvent* event) {
-	if (event && (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::KeyRelease)) {
+	if (!event) {
+		return QMainWindow::eventFilter(watched, event);
+	}
+	if (event->type() == QEvent::KeyPress) {
+		QKeyEvent* keyEvent = static_cast<QKeyEvent*>(event);
+		if (!keyEvent->isAutoRepeat()) {
+			QString keyName = describeKeyEvent(keyEvent);
+			if (!keyName.isEmpty()) {
+				m_lastClickedButton = keyName;
+				updateMetricsOverlay();
+			}
+		}
+	}
+	if (event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::KeyRelease) {
 		if (QAbstractButton* button = qobject_cast<QAbstractButton*>(watched)) {
 			QString buttonName = describeButton(button);
 			if (!buttonName.isEmpty()) {
